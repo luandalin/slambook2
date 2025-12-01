@@ -399,7 +399,7 @@ void BfMatch(const vector<DescType> &desc1, const vector<DescType> &desc2, vecto
 
   for (size_t i1 = 0; i1 < desc1.size(); ++i1) {
     if (desc1[i1].empty()) continue;
-    cv::DMatch m{i1, 0, 256};
+    cv::DMatch m{static_cast<int>(i1), 0, 256};
     for (size_t i2 = 0; i2 < desc2.size(); ++i2) {
       if (desc2[i2].empty()) continue;
       int distance = 0;

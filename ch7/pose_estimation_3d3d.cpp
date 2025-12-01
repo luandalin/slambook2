@@ -56,9 +56,9 @@ public:
     _estimate = Sophus::SE3d::exp(update_eigen) * _estimate;
   }
 
-  virtual bool read(istream &in) override {}
+  virtual bool read(istream &in) override {return true;}
 
-  virtual bool write(ostream &out) const override {}
+  virtual bool write(ostream &out) const override {return true;}
 };
 
 /// g2o edge
@@ -81,9 +81,9 @@ public:
     _jacobianOplusXi.block<3, 3>(0, 3) = Sophus::SO3d::hat(xyz_trans);
   }
 
-  bool read(istream &in) {}
+  bool read(istream &in) {return true;}
 
-  bool write(ostream &out) const {}
+  bool write(ostream &out) const {return true;}
 
 protected:
   Eigen::Vector3d _point;
