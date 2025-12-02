@@ -38,7 +38,7 @@ int main(int argc, char **argv) {
   }
   rmse = rmse / double(estimated.size());                 //$\frac{\sum e_i}{N}$
   rmse = sqrt(rmse);                                      //$\sqrt{rmse}$
-  cout << "RMSE = " << rmse << endl;
+  cout << "RMSE=" << rmse << endl;
 
   DrawTrajectory(groundtruth, estimated);
   return 0;
