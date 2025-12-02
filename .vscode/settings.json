@@ -1,5 +1,6 @@
 {
     "files.associations": {
         "iostream": "cpp"
-    }
+    },
+    "cmake.sourceDirectory": "/home/dalin/downloads/gaoxiang/slambook2/3rdparty/g2o"
 }

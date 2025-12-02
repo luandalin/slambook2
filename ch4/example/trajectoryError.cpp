@@ -23,14 +23,21 @@ int main(int argc, char **argv) {
   assert(groundtruth.size() == estimated.size());
 
   // compute rmse
+
+  //$$ \mathbf{e}_i = \log \left( \mathbf{P}^{(i)}{gt}{}^{-1} \cdot \mathbf{P}^{(i)}_{est} \right) $$
+  
+  
+  //$\mathrm{RMSE} = \sqrt{ \frac{1}{N} \sum_{i=1}^N \left\| \mathbf{e}_i \right\|^2 }$
+  
+
   double rmse = 0;
   for (size_t i = 0; i < estimated.size(); i++) {
     Sophus::SE3d p1 = estimated[i], p2 = groundtruth[i];
-    double error = (p2.inverse() * p1).log().norm();
-    rmse += error * error;
+    double error = (p2.inverse() * p1).log().norm();      //$e_i=log(p_2^{-1}\cdot p_1)$
+    rmse += error * error;                                //$\sum e_i$
   }
-  rmse = rmse / double(estimated.size());
-  rmse = sqrt(rmse);
+  rmse = rmse / double(estimated.size());                 //$\frac{\sum e_i}{N}$
+  rmse = sqrt(rmse);                                      //$\sqrt{rmse}$
   cout << "RMSE = " << rmse << endl;
 
   DrawTrajectory(groundtruth, estimated);
