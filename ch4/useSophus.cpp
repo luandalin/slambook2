@@ -30,7 +30,8 @@ int main(int argc, char **argv) {
 
   // 增量扰动模型的更新
   Vector3d update_so3(1e-4,0,0); //假设更新量为这么多
-
+  Sophus::SO3d SO3_updated = Sophus::SO3d::exp(update_so3) * SO3_R;
+  cout<<"SO3 updated = \n" << SO3_updated.matrix() <<endl;
 
   return 0;
 }
