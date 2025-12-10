@@ -6,7 +6,14 @@
 
 using namespace std;
 using namespace Eigen;
+  //$$J ( x ) ^ { T } J ( x ) \Delta x = - J ( x ) ^ { T } f ( x ) .$$
+  
 
+  //$$\sum_{n=0}^{100}J ( x )_n ^ { T } J ( x )_n\left[\begin{array} { l } \Delta a\\\Delta b\\\Delta c\end{array}\right]=\sum_{n=0}^{100}\left(-J(x)_nf(x)_n\right)$$
+
+  
+  //$$H \Delta x = g .$$
+  
 int main(int argc, char **argv) {
   double ar = 1.0, br = 2.0, cr = 1.0;         // 真实参数值
   double ae = 2.0, be = -1.0, ce = 5.0;        // 估计参数值
@@ -15,6 +22,7 @@ int main(int argc, char **argv) {
   double inv_sigma = 1.0 / w_sigma;
   cv::RNG rng;                                 // OpenCV随机数产生器
 
+  //生成带噪声的数据曲线
   vector<double> x_data, y_data;      // 数据
   for (int i = 0; i < N; i++) {
     double x = i / 100.0;
@@ -35,9 +43,11 @@ int main(int argc, char **argv) {
 
     for (int i = 0; i < N; i++) {
       double xi = x_data[i], yi = y_data[i];  // 第i个数据点
-      double error = yi - exp(ae * xi * xi + be * xi + ce);
+      
+      //$$\textcolor{red}{error=y-\exp(ax^2+bx+c)}$$ 
+      double error = yi - exp(ae * xi * xi + be * xi + ce);//error = y-f(x)
       Vector3d J; // 雅可比矩阵
-      J[0] = -xi * xi * exp(ae * xi * xi + be * xi + ce);  // de/da
+      J[0] = -xi * xi * exp(ae * xi * xi + be * xi + ce);  // de/da $$\frac{\partial e}{\partial a}=\frac{\partial(y-\exp(ax^2+bx+c))}{\partial a}=-x^2\cdot \exp(ax^2+bx+c)$$
       J[1] = -xi * exp(ae * xi * xi + be * xi + ce);  // de/db
       J[2] = -exp(ae * xi * xi + be * xi + ce);  // de/dc
 
@@ -48,7 +58,7 @@ int main(int argc, char **argv) {
     }
 
     // 求解线性方程 Hx=b
-    Vector3d dx = H.ldlt().solve(b);
+    Vector3d dx = H.ldlt().solve(b);  //求解$\Delta x$
     if (isnan(dx[0])) {
       cout << "result is nan!" << endl;
       break;
