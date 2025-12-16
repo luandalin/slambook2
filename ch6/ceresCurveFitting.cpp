@@ -18,7 +18,7 @@ struct CURVE_FITTING_COST {
   bool operator()(
     const T *const abc, // 模型参数，有3维
     T *residual) const {
-    residual[0] = T(_y) - ceres::exp(abc[0] * T(_x) * T(_x) + abc[1] * T(_x) + abc[2]); // y-exp(ax^2+bx+c)
+    residual[0] = T(_y) - ceres::exp(abc[0] * T(_x) * T(_x) + abc[1] * T(_x) + abc[2]); // $$y-exp(ax^2+bx+c)$$
     return true;
   }
 
