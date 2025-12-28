@@ -109,13 +109,15 @@ int main(int argc, char **argv) {
     Mat img1 = imread(file_1, 0);
     Mat img2 = imread(file_2, 0);
 
-    // key points, using GFTT here.
+    // key points, using GFTT here.在第一帧 img1 中检测 GFTT 角点（Shi-Tomasi 角点）：
     vector<KeyPoint> kp1;
-    Ptr<GFTTDetector> detector = GFTTDetector::create(500, 0.01, 20); // maximum 500 keypoints
+    Ptr<GFTTDetector> detector = GFTTDetector::create(500, 0.01, 20); // maximum 500 keypoints 最多500个角点，质量水平0.01，最小距离20像素
     detector->detect(img1, kp1);
 
     // now lets track these key points in the second image
     // first use single level LK in the validation picture
+    // 跟踪 kp1 到 img2，得到:kp2_single：第二帧中的跟踪位置； success_single：每个关键点是否成功跟踪的标志位。
+    // 未启用 inverse 模式（默认 inverse=false），也未提供初值（has_initial=false）适用于小位移场景
     vector<KeyPoint> kp2_single;
     vector<bool> success_single;
     OpticalFlowSingleLevel(img1, img2, kp1, kp2_single, success_single);
@@ -124,7 +126,7 @@ int main(int argc, char **argv) {
     vector<KeyPoint> kp2_multi;
     vector<bool> success_multi;
     chrono::steady_clock::time_point t1 = chrono::steady_clock::now();
-    OpticalFlowMultiLevel(img1, img2, kp1, kp2_multi, success_multi, true);
+    OpticalFlowMultiLevel(img1, img2, kp1, kp2_multi, success_multi, true);   //启用 inverse=true（使用逆向 Compositional 模式，加速且稳定）；
     chrono::steady_clock::time_point t2 = chrono::steady_clock::now();
     auto time_used = chrono::duration_cast<chrono::duration<double>>(t2 - t1);
     cout << "optical flow by gauss-newton: " << time_used.count() << endl;
@@ -186,45 +188,77 @@ void OpticalFlowSingleLevel(
     kp2.resize(kp1.size());
     success.resize(kp1.size());
     OpticalFlowTracker tracker(img1, img2, kp1, kp2, success, inverse, has_initial);
+    
+    /*
+        parallel_for_: OpenCV 提供的并行计算接口，利用多线程加速循环任务的执行。
+        作用：将一个大任务（如遍历 kp1.size() 个关键点）自动拆分成多个子任务，分配给多个 CPU 核心并行执行，显著加速计算。
+        参数1：Range(0, kp1.size())
+        定义任务的索引范围——从 0 到 kp1.size() - 1，每个整数索引对应一个关键点。
+        参数2：std::bind(...)
+        绑定一个可调用对象（函数），该函数将被每个子任务（线程）调用。
+        &OpticalFlowTracker::calculateOpticalFlow：要调用的成员函数；
+        &tracker：该函数作用的对象（注意：所有线程共享同一个 tracker 实例）；
+        placeholders::_1：占位符，表示 parallel_for_ 会将每个子任务的 Range 子区间（如 Range(start, end)） 作为第一个参数传给 calculateOpticalFlow。
+        线程安全保证：
+        calculateOpticalFlow 的设计必须满足：
+        只读共享数据（如 img1, img2, kp1）；
+        写入位置互不重叠（如线程 A 处理 i=0~99，线程 B 处理 i=100~199，分别写 kp2[0~99] 和 kp2[100~199]）；
+        无全局/静态变量竞争。
+        从 OpticalFlowTracker::calculateOpticalFlow 的实现可见，它通过 Range 参数确保每个线程处理互不重叠的索引区间，因此是线程安全的。
+    */
     parallel_for_(Range(0, kp1.size()),
                   std::bind(&OpticalFlowTracker::calculateOpticalFlow, &tracker, placeholders::_1));
 }
-
+/*
+ *
+ * 对指定索引范围 range 内的关键点执行光流跟踪
+ *
+ */
 void OpticalFlowTracker::calculateOpticalFlow(const Range &range) {
     // parameters
-    int half_patch_size = 4;
+    int half_patch_size = 4;                            //定义图像块（patch）的半宽为 4 像素 → 实际使用 8×8 的图像块（从 -4 到 +3 共 8 个像素）。
     int iterations = 10;
     for (size_t i = range.start; i < range.end; i++) {
-        auto kp = kp1[i];
-        double dx = 0, dy = 0; // dx,dy need to be estimated
-        if (has_initial) {
+        auto kp = kp1[i];                               //获取第 i 个关键点在第一帧（参考帧） 中的 2D 位置 kp1[i]。
+        double dx = 0, dy = 0;                          // dx,dy need to be estimated 初始化光流向量 (dx, dy)，表示该点从帧1到帧2的位移。
+        if (has_initial) {                              //如果 has_initial 标志为 true，则表示 kp2 已经包含了对关键点在第二帧中的初始估计位置。
             dx = kp2[i].pt.x - kp.pt.x;
             dy = kp2[i].pt.y - kp.pt.y;
         }
 
-        double cost = 0, lastCost = 0;
-        bool succ = true; // indicate if this point succeeded
+        double cost = 0, lastCost = 0;                  //当前迭代的光度误差平方和 , 上一次迭代的误差平方和
+        bool succ = true; // indicate if this point succeeded  标志位，指示该关键点的光流估计是否成功。
 
         // Gauss-Newton iterations
-        Eigen::Matrix2d H = Eigen::Matrix2d::Zero();    // hessian
-        Eigen::Vector2d b = Eigen::Vector2d::Zero();    // bias
-        Eigen::Vector2d J;  // jacobian
+        Eigen::Matrix2d H = Eigen::Matrix2d::Zero();    // hessian Hessian 矩阵（2×2，对应 dx, dy）
+        Eigen::Vector2d b = Eigen::Vector2d::Zero();    // bias 负梯度向量（即 Jᵀ·r）
+        Eigen::Vector2d J;                              // jacobian 光度误差对 (dx, dy) 的雅可比（2 维向量）
         for (int iter = 0; iter < iterations; iter++) {
-            if (inverse == false) {
+            if (inverse == false) {                     //正向模式（inverse == false）：每次迭代都重新计算 H 和 b（标准 GN）
                 H = Eigen::Matrix2d::Zero();
                 b = Eigen::Vector2d::Zero();
-            } else {
+            } else {                                    //逆向模式（inverse == true）：H 只在第 0 次迭代计算一次，后续只更新 b（加速计算，是 SVO 等系统的核心技巧）
                 // only reset b
                 b = Eigen::Vector2d::Zero();
             }
 
             cost = 0;
 
-            // compute cost and jacobian
+            // compute cost and jacobian 计算代价函数和雅可比矩阵 遍历 8×8 图像块中的每个像素（共 64 个点）。
             for (int x = -half_patch_size; x < half_patch_size; x++)
                 for (int y = -half_patch_size; y < half_patch_size; y++) {
+                    //img1 中参考点灰度值 - img2 中根据当前 (dx, dy) 预测位置的灰度（需双线性插值）
+                    //$e = I _ { 1 } ( x ) - I _ { 2 } ( x + d x , y + d y )$ 
                     double error = GetPixelValue(img1, kp.pt.x + x, kp.pt.y + y) -
-                                   GetPixelValue(img2, kp.pt.x + x + dx, kp.pt.y + y + dy);;  // Jacobian
+                                   GetPixelValue(img2, kp.pt.x + x + dx, kp.pt.y + y + dy);  // Jacobian
+                    //正向模式：雅可比在 第二帧 img2 上计算（随 (dx, dy) 变化）
+                    //用中心差分法计算 img2 在预测点处的 x、y 方向梯度： （负号来自误差定义 $e = I_1 - I_2$） $$\frac { \partial e } { \partial \mathrm { d } } = - \nabla I _ { 2 }$$ 
+   
+
+                    //$\frac { \partial I _ { 2 } } { \partial X } \left( x ^ { \prime } , y ^ { \prime } \right) \approx \frac { I _ { 2 } \left( x ^ { \prime } + 1 , y ^ { \prime } \right) - I _ { 2 } \left( x ^ { \prime } - 1 , y ^ { \prime } \right) } { 2 }$         
+                    
+                    //$\frac { \partial I _ { 2 } } { \partial Y } \left( x ^ { \prime } , y ^ { \prime } \right) \approx \frac { I _ { 2 } \left( x ^ { \prime }  , y ^ { \prime }+1 \right) - I _ { 2 } \left( x ^ { \prime }  , y ^ { \prime }-1 \right) } { 2 }$
+                    
                     if (inverse == false) {
                         J = -1.0 * Eigen::Vector2d(
                             0.5 * (GetPixelValue(img2, kp.pt.x + dx + x + 1, kp.pt.y + dy + y) -
@@ -284,6 +318,12 @@ void OpticalFlowTracker::calculateOpticalFlow(const Range &range) {
     }
 }
 
+/*
+ *
+ * 使用多尺度图像金字塔，对 kp1 中的关键点进行由粗到精的光流跟踪，输出其在 img2 中的位置 kp2
+ * 适用于大位移或快速运动场景
+ *
+*/
 void OpticalFlowMultiLevel(
     const Mat &img1,
     const Mat &img2,
@@ -293,15 +333,15 @@ void OpticalFlowMultiLevel(
     bool inverse) {
 
     // parameters
-    int pyramids = 4;
-    double pyramid_scale = 0.5;
-    double scales[] = {1.0, 0.5, 0.25, 0.125};
+    int pyramids = 4;                               //金字塔层数 4 层金字塔（第 0 层为原图，第 3 层最粗糙）
+    double pyramid_scale = 0.5;                     //每层尺寸为上一层的 50%（即长宽各缩一半，面积 1/4）
+    double scales[] = {1.0, 0.5, 0.25, 0.125};      //各层相对于原图的缩放比例
 
     // create pyramids
     chrono::steady_clock::time_point t1 = chrono::steady_clock::now();
     vector<Mat> pyr1, pyr2; // image pyramids
     for (int i = 0; i < pyramids; i++) {
-        if (i == 0) {
+        if (i == 0) {                   //第 0 层为原图，其余层通过逐层下采样生成
             pyr1.push_back(img1);
             pyr2.push_back(img2);
         } else {
@@ -322,7 +362,7 @@ void OpticalFlowMultiLevel(
     vector<KeyPoint> kp1_pyr, kp2_pyr;
     for (auto &kp:kp1) {
         auto kp_top = kp;
-        kp_top.pt *= scales[pyramids - 1];
+        kp_top.pt *= scales[pyramids - 1];          //pt.x = pt.x * 0.125; pt.y = pt.y * 0.125; 将关键点坐标缩放到最顶层金字塔尺度
         kp1_pyr.push_back(kp_top);
         kp2_pyr.push_back(kp_top);
     }
@@ -338,7 +378,7 @@ void OpticalFlowMultiLevel(
 
         if (level > 0) {
             for (auto &kp: kp1_pyr)
-                kp.pt /= pyramid_scale;
+                kp.pt /= pyramid_scale;         //将关键点坐标放大到下一层金字塔尺度:kp.pt = kp.pt / 0.5 =>  kp.pt = kp.pt * 2.0
             for (auto &kp: kp2_pyr)
                 kp.pt /= pyramid_scale;
         }

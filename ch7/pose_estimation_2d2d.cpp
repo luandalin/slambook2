@@ -46,7 +46,7 @@ int main(int argc, char **argv) {
   Mat R, t;
   pose_estimation_2d2d(keypoints_1, keypoints_2, matches, R, t);
 
-  //-- 验证E=t^R*scale
+  //-- 验证$E=t^\wedge R*scale$
   Mat t_x =
     (Mat_<double>(3, 3) << 0, -t.at<double>(2, 0), t.at<double>(1, 0),
       t.at<double>(2, 0), 0, -t.at<double>(0, 0),
@@ -74,7 +74,7 @@ void find_feature_matches(const Mat &img_1, const Mat &img_2,
   //-- 初始化
   Mat descriptors_1, descriptors_2;
   // used in OpenCV3
-  Ptr<FeatureDetector> detector = ORB::create();
+  Ptr<FeatureDetector>       detector = ORB::create();
   Ptr<DescriptorExtractor> descriptor = ORB::create();
   // use this if you are in OpenCV2
   // Ptr<FeatureDetector> detector = FeatureDetector::create ( "ORB" );

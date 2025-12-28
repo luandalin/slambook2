@@ -122,27 +122,30 @@ inline float GetPixelValue(const cv::Mat &img, float x, float y) {
 
 int main(int argc, char **argv) {
 
-    cv::Mat left_img = cv::imread(left_file, 0);
-    cv::Mat disparity_img = cv::imread(disparity_file, 0);
+    cv::Mat left_img = cv::imread(left_file, 0);            //参考帧
+    cv::Mat disparity_img = cv::imread(disparity_file, 0);  //视差图
 
     // let's randomly pick pixels in the first image and generate some 3d points in the first image's frame
     cv::RNG rng;
     int nPoints = 2000;
-    int boarder = 20;
-    VecVector2d pixels_ref;
-    vector<double> depth_ref;
+    int boarder = 20;           //边界宽度，避免采样到图像边缘区域
+    VecVector2d pixels_ref;     //存储参考帧中像素坐标,每个元素是 (x, y)，位于第一帧图像坐标系
+    vector<double> depth_ref;   //存储参考帧中像素对应的深度值,单位通常是米
 
-    // generate pixels in ref and load depth data
+    // generate pixels in ref and load depth data 生成参考帧像素点并读取其深度
     for (int i = 0; i < nPoints; i++) {
         int x = rng.uniform(boarder, left_img.cols - boarder);  // don't pick pixels close to boarder
         int y = rng.uniform(boarder, left_img.rows - boarder);  // don't pick pixels close to boarder
-        int disparity = disparity_img.at<uchar>(y, x);
+        
+        //根据双目几何，将视差转换为深度: $depth = fx * baseline / disparity$  $Z=\frac{f_x\cdot b}{d}$
+        
+        int disparity = disparity_img.at<uchar>(y, x);          // 读取该像素在视差图中的视差值,使用 uchar，说明视差图是 8 位灰度
         double depth = fx * baseline / disparity; // you know this is disparity to depth
         depth_ref.push_back(depth);
         pixels_ref.push_back(Eigen::Vector2d(x, y));
     }
 
-    // estimates 01~05.png's pose using this information
+    // estimates 01~05.png's pose using this information 使用上述的像素点和深度，估计后续多张图像的相对位姿
     Sophus::SE3d T_cur_ref;
 
     for (int i = 1; i < 6; i++) {  // 1~10

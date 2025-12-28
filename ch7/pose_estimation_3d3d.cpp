@@ -114,10 +114,19 @@ int main(int argc, char **argv) {
     ushort d2 = depth2.ptr<unsigned short>(int(keypoints_2[m.trainIdx].pt.y))[int(keypoints_2[m.trainIdx].pt.x)];
     if (d1 == 0 || d2 == 0)   // bad depth
       continue;
+    //像素坐标转相机归一化坐标  
+
+    //$[x,y]^\top = [\frac{u - c_x}{fx}, \frac{v - c_y}{f_y}]^\top$
+
     Point2d p1 = pixel2cam(keypoints_1[m.queryIdx].pt, K);
     Point2d p2 = pixel2cam(keypoints_2[m.trainIdx].pt, K);
+
+    //转换成米为单位的深度,因为深度图（如Kinect或Realsense)通常以毫米 $( \mathrm { m m } )$ 为单位存储为unsigned short,而5000是经验缩放因子
+    //（例如： $\mathrm { d } 1 = 5 0 0 0$ 表示1米)。所以dd1实际是以米为单位的深度值 $Z _ { \circ }$ 
     float dd1 = float(d1) / 5000.0;
     float dd2 = float(d2) / 5000.0;
+
+    //空间点坐标队列：$P_{xyz}=[x\cdot Z,\space y\cdot Z,\space Z]$
     pts1.push_back(Point3f(p1.x * dd1, p1.y * dd1, dd1));
     pts2.push_back(Point3f(p2.x * dd2, p2.y * dd2, dd2));
   }
@@ -192,6 +201,9 @@ void find_feature_matches(const Mat &img_1, const Mat &img_2,
     }
   }
 }
+// 像素坐标转相机归一化坐标,通过相机内参K的逆矩阵将像素坐标转换为归一化平面坐标：$(p_x, p_y) \rightarrow (u, v)$
+
+//$$u=\frac{p_x - c_x}{f_x}, v=\frac{p_y - c_y}{f_y}$$
 
 Point2d pixel2cam(const Point2d &p, const Mat &K) {
   return Point2d(
@@ -209,15 +221,19 @@ void pose_estimation_3d3d(const vector<Point3f> &pts1,
     p1 += pts1[i];
     p2 += pts2[i];
   }
+  //P1,P2:质心 参考 point3f-vs-vec3f.md
   p1 = Point3f(Vec3f(p1) / N);
   p2 = Point3f(Vec3f(p2) / N);
   vector<Point3f> q1(N), q2(N); // remove the center
+
+  //q1,q2:去质心坐标
   for (int i = 0; i < N; i++) {
     q1[i] = pts1[i] - p1;
     q2[i] = pts2[i] - p2;
   }
 
-  // compute q1*q2^T
+  // compute q1*q2^T  $$W=\sum_{i=1}^{N} q1_i \cdot q2_i^T$$
+  
   Eigen::Matrix3d W = Eigen::Matrix3d::Zero();
   for (int i = 0; i < N; i++) {
     W += Eigen::Vector3d(q1[i].x, q1[i].y, q1[i].z) * Eigen::Vector3d(q2[i].x, q2[i].y, q2[i].z).transpose();
@@ -225,6 +241,7 @@ void pose_estimation_3d3d(const vector<Point3f> &pts1,
   cout << "W=" << W << endl;
 
   // SVD on W
+  //计算并存储完整的 $U$ 矩阵和 $V$ 矩阵。
   Eigen::JacobiSVD<Eigen::Matrix3d> svd(W, Eigen::ComputeFullU | Eigen::ComputeFullV);
   Eigen::Matrix3d U = svd.matrixU();
   Eigen::Matrix3d V = svd.matrixV();
@@ -232,10 +249,15 @@ void pose_estimation_3d3d(const vector<Point3f> &pts1,
   cout << "U=" << U << endl;
   cout << "V=" << V << endl;
 
+  // 计算旋转矩阵: $R=U*V^T$
+  //参考：为什么是UV^T.md
   Eigen::Matrix3d R_ = U * (V.transpose());
+
+  // 检查决定性，防止出现“镜像（反射）变换” (det(R) = -1)
   if (R_.determinant() < 0) {
     R_ = -R_;
   }
+  // 计算平移向量: $t=P1-R*P2$
   Eigen::Vector3d t_ = Eigen::Vector3d(p1.x, p1.y, p1.z) - R_ * Eigen::Vector3d(p2.x, p2.y, p2.z);
 
   // convert to cv::Mat
@@ -252,30 +274,36 @@ void bundleAdjustment(
   const vector<Point3f> &pts2,
   Mat &R, Mat &t) {
   // 构建图优化，先设定g2o
-  typedef g2o::BlockSolverX BlockSolverType;
-  typedef g2o::LinearSolverDense<BlockSolverType::PoseMatrixType> LinearSolverType; // 线性求解器类型
+  typedef g2o::BlockSolverX BlockSolverType;//自动推导 Jacobian 矩阵,通用的块求解器,适用于任意维度
+  typedef g2o::LinearSolverDense<BlockSolverType::PoseMatrixType> LinearSolverType; // 线性求解器类型:稠密 Cholesky 分解  $PoseMatrixType\in SE(3)$
   // 梯度下降方法，可以从GN, LM, DogLeg 中选
   auto solver = new g2o::OptimizationAlgorithmLevenberg(
     g2o::make_unique<BlockSolverType>(g2o::make_unique<LinearSolverType>()));
-  g2o::SparseOptimizer optimizer;     // 图模型
-  optimizer.setAlgorithm(solver);   // 设置求解器
+  g2o::SparseOptimizer optimizer;     // 图模型 创建图优化器 optimizer（g2o 的核心类，管理顶点和边）。
+  optimizer.setAlgorithm(solver);   // 设置求解器 将上面创建的 LM 求解器绑定到优化器。
   optimizer.setVerbose(true);       // 打开调试输出
 
-  // vertex
-  VertexPose *pose = new VertexPose(); // camera pose
-  pose->setId(0);
-  pose->setEstimate(Sophus::SE3d());
-  optimizer.addVertex(pose);
+  // vertex:顶点
+  VertexPose *pose = new VertexPose(); // camera pose 创建一个位姿顶点（Vertex），表示待优化的相机位姿（即 SE(3) 变换）。
+  pose->setId(0);                       //给该顶点分配唯一 ID（0）。图优化中每个顶点必须有唯一 ID。
+  pose->setEstimate(Sophus::SE3d());    //初始化位姿估计为单位变换（即无旋转和平移）。这是优化的起点。在实际系统中，可能用 ICP 或运动模型提供更好的初值。
+  optimizer.addVertex(pose);          //将该顶点添加到优化器中，纳入图优化的计算。
 
-  // edges
+  // edges：边
+  //每个边代表一个 3D-3D 点对之间的约束关系。 这条边的含义是：“已知一个 3D 点 pts2[i]，它经过当前位姿变换后，应与观测值 pts1[i] 一致”。
   for (size_t i = 0; i < pts1.size(); i++) {
     EdgeProjectXYZRGBDPoseOnly *edge = new EdgeProjectXYZRGBDPoseOnly(
       Eigen::Vector3d(pts2[i].x, pts2[i].y, pts2[i].z));
-    edge->setVertex(0, pose);
+    edge->setVertex(0, pose);                         //将这条边连接到 ID 为 0 的顶点（即我们刚才添加的 pose）。
+
+    //设置观测值（measurement） 为 pts1[i]（即目标点）。优化目标：让 T * pts2[i] ≈ pts1[i]，其中 T 是待优化的 SE(3) 变换。
     edge->setMeasurement(Eigen::Vector3d(
       pts1[i].x, pts1[i].y, pts1[i].z));
+
+    //设置信息矩阵（Information Matrix） 为单位阵： 信息矩阵 = 协方差矩阵的逆。单位阵表示对 X、Y、Z 三个方向的观测误差同等信任，且无相关性。
+    //若深度精度已知，可设为非单位阵（如 diag(1/σ², 1/σ², 1/σ²)）。 
     edge->setInformation(Eigen::Matrix3d::Identity());
-    optimizer.addEdge(edge);
+    optimizer.addEdge(edge);                            //将该边添加到优化器中，纳入图优化的计算。
   }
 
   chrono::steady_clock::time_point t1 = chrono::steady_clock::now();
@@ -288,7 +316,7 @@ void bundleAdjustment(
   cout << endl << "after optimization:" << endl;
   cout << "T=\n" << pose->estimate().matrix() << endl;
 
-  // convert to cv::Mat
+  // convert to cv::Mat 从 Sophus::SE3d 中提取：R_(3x3)和 t_(3x1)
   Eigen::Matrix3d R_ = pose->estimate().rotationMatrix();
   Eigen::Vector3d t_ = pose->estimate().translation();
   R = (Mat_<double>(3, 3) <<
@@ -296,5 +324,5 @@ void bundleAdjustment(
     R_(1, 0), R_(1, 1), R_(1, 2),
     R_(2, 0), R_(2, 1), R_(2, 2)
   );
-  t = (Mat_<double>(3, 1) << t_(0, 0), t_(1, 0), t_(2, 0));
+  t = (Mat_<double>(3, 1) << t_(0, 0), t_(1, 0), t_(2, 0));//将 Eigen::Vector3d 转换为 OpenCV 的 cv::Mat（3×1 列向量）。
 }

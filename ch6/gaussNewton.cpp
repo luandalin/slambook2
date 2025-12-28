@@ -16,6 +16,7 @@ using namespace Eigen;
   
 int main(int argc, char **argv) {
   double ar = 1.0, br = 2.0, cr = 1.0;         // 真实参数值
+  //高斯牛顿第一步：给定初值$x_0$
   double ae = 2.0, be = -1.0, ce = 5.0;        // 估计参数值
   int N = 100;                                 // 数据点
   double w_sigma = 1.0;                        // 噪声Sigma值
@@ -43,14 +44,14 @@ int main(int argc, char **argv) {
 
     for (int i = 0; i < N; i++) {
       double xi = x_data[i], yi = y_data[i];  // 第i个数据点
-      
+      //高斯牛顿第二步：对于第 k 次迭代，求出当前的雅可比矩阵 $J (x_k )$ 和误差 $f (x_k )$。
       //$$\textcolor{red}{error=y-\exp(ax^2+bx+c)}$$ 
       double error = yi - exp(ae * xi * xi + be * xi + ce);//$$error = y-f(x)$$
       Vector3d J; // 雅可比矩阵
       J[0] = -xi * xi * exp(ae * xi * xi + be * xi + ce);  // de/da $$\frac{\partial e}{\partial a}=\frac{\partial(y-\exp(ax^2+bx+c))}{\partial a}=-x^2\cdot \exp(ax^2+bx+c)$$
       J[1] = -xi * exp(ae * xi * xi + be * xi + ce);  // de/db
       J[2] = -exp(ae * xi * xi + be * xi + ce);  // de/dc
-
+      //$J^\top J$可能奇异或病态
       H += inv_sigma * inv_sigma * J * J.transpose();  //$H=J\cdot W^{-1}\cdot J^\top$
       b += -inv_sigma * inv_sigma * error * J;
 
@@ -58,17 +59,18 @@ int main(int argc, char **argv) {
     }
 
     // 求解线性方程 Hx=b
+    //高斯牛顿第三步：解线性方程以获得参数更新量 $\Delta x$.
     Vector3d dx = H.ldlt().solve(b);  //求解$\Delta x$
     if (isnan(dx[0])) {
       cout << "result is nan!" << endl;
       break;
     }
-
+    //高斯牛顿第四步：若 cost 大于等于last cost，则停止。否则，令 x k+1 = x k + ∆x k ，否则返回 第二步.
     if (iter > 0 && cost >= lastCost) {
       cout << "cost: " << cost << ">= last cost: " << lastCost << ", break." << endl;
       break;
     }
-
+    //$$x_{k+1} = x_k + \Delta x_k$$
     ae += dx[0];
     be += dx[1];
     ce += dx[2];

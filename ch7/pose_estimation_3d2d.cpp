@@ -191,14 +191,16 @@ void bundleAdjustmentGaussNewton(
     for (int i = 0; i < points_3d.size(); i++) {
       Eigen::Vector3d pc = pose * points_3d[i];
       double inv_z = 1.0 / pc[2];
-      double inv_z2 = inv_z * inv_z;
-      Eigen::Vector2d proj(fx * pc[0] / pc[2] + cx, fy * pc[1] / pc[2] + cy);
+      double inv_z2 = inv_z * inv_z;//$\frac{1}{Z^2}$
+      
+      Eigen::Vector2d proj(fx * pc[0] / pc[2] + cx, fy * pc[1] / pc[2] + cy);//$$\text{proj} = \begin{bmatrix}fx \cdot \frac{X}{Z} + cx \\ fy \cdot \frac{Y}{Z} + cy\end{bmatrix}$$
 
-      Eigen::Vector2d e = points_2d[i] - proj;
+      Eigen::Vector2d e = points_2d[i] - proj;//$$\text{error} = \text{point}_{2d} - \text{proj}$$
 
       cost += e.squaredNorm();
       Eigen::Matrix<double, 2, 6> J;
-      J << -fx * inv_z,
+      
+      J << -fx * inv_z,                         
         0,
         fx * pc[0] * inv_z2,
         fx * pc[0] * pc[1] * inv_z2,
