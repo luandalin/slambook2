@@ -157,11 +157,16 @@ int main(int argc, char **argv) {
     return 0;
 }
 
+/*
+ *
+ *利用参考帧像素 + 深度，通过最小化光度误差，使用 高斯–牛顿（Gauss–Newton） 在 SE(3) 上迭代估计位姿 T21 (估计当前帧相对于参考帧的位姿变换 T21)
+ *
+ */
 void DirectPoseEstimationSingleLayer(
-    const cv::Mat &img1,
-    const cv::Mat &img2,
-    const VecVector2d &px_ref,
-    const vector<double> depth_ref,
+    const cv::Mat &img1,            //参考帧
+    const cv::Mat &img2,            //当前帧
+    const VecVector2d &px_ref,      //参考帧中像素坐标
+    const vector<double> depth_ref,  //参考帧中像素对应的深度值
     Sophus::SE3d &T21) {
 
     const int iterations = 10;
@@ -220,36 +225,58 @@ void DirectPoseEstimationSingleLayer(
     cv::imshow("current", img2_show);
     cv::waitKey();
 }
-
-void JacobianAccumulator::accumulate_jacobian(const cv::Range &range) {
+/*
+ *
+ * 对一批像素点，计算光度误差、位姿雅可比，并累加 Hessian、bias 和 cost（支持并行）
+ * @param range 计算的像素点索引范围
+*/
+void JacobianAccumulator::accumulate_jacobian(const cv::Range &range) { 
 
     // parameters
-    const int half_patch_size = 1;
-    int cnt_good = 0;
-    Matrix6d hessian = Matrix6d::Zero();
-    Vector6d bias = Vector6d::Zero();
-    double cost_tmp = 0;
+    const int half_patch_size = 1;          //使用 3x3 的小块进行光度误差计算
+    int cnt_good = 0;                       //统计有效像素点数量
+    Matrix6d hessian = Matrix6d::Zero();    //局部 Hessian 矩阵
+    Vector6d bias = Vector6d::Zero();       //局部 bias 向量
+    double cost_tmp = 0;                    //局部 cost 值
 
-    for (size_t i = range.start; i < range.end; i++) {
+    for (size_t i = range.start; i < range.end; i++) {          //遍历该线程负责的像素点
 
-        // compute the projection in the second image
+        // compute the projection in the second image 像素 + 深度恢复 3D 点（参考帧）$P_{ref}=Z\begin{pmatrix}\frac{x-c_x}{f_x}\\\frac{y-c_y}{f_y}\\1\end{pmatrix}$
+        
         Eigen::Vector3d point_ref =
             depth_ref[i] * Eigen::Vector3d((px_ref[i][0] - cx) / fx, (px_ref[i][1] - cy) / fy, 1);
+
+        // project to the second image 得到当前相机坐标系下的 3D 点 T21：参考帧 → 当前帧的位姿
         Eigen::Vector3d point_cur = T21 * point_ref;
         if (point_cur[2] < 0)   // depth invalid
             continue;
-
-        float u = fx * point_cur[0] / point_cur[2] + cx, v = fy * point_cur[1] / point_cur[2] + cy;
+        // project to pixel coordinate 系像素坐标系下的投影点: $u=f_x\frac{X}{Z}+c_x, v=f_y\frac{Y}{Z}+c_y$
+        float u = fx * point_cur[0] / point_cur[2] + cx;
+        float v = fy * point_cur[1] / point_cur[2] + cy;
+        //确保 patch 不越界
         if (u < half_patch_size || u > img2.cols - half_patch_size || v < half_patch_size ||
             v > img2.rows - half_patch_size)
             continue;
-
+        //保存投影结果（用于可视化）    
         projection[i] = Eigen::Vector2d(u, v);
+        //为雅可比计算做准备
         double X = point_cur[0], Y = point_cur[1], Z = point_cur[2],
             Z2 = Z * Z, Z_inv = 1.0 / Z, Z2_inv = Z_inv * Z_inv;
         cnt_good++;
 
-        // and compute error and jacobian
+        // ch8/直接法公式推导过程.md
+        // and compute error and jacobian 遍历 3×3 patch: $x, y \in [-1, 0, +1]$
+
+        //$q=TP\quad\quad u=\frac{1}{Z_2}Kq\tag{}$
+
+
+        // $\frac{\partial e}{\partial \delta\xi} = \underbrace{\frac{\partial e}{\partial I_2}}_{-1}\cdot\underbrace{\frac{\partial I_2}{\partial u}}_{\text{图像梯度}}\cdot\underbrace{\frac{\partial u}{\partial q}}_{\text{投影雅可比}}\cdot\underbrace{\frac{\partial q}{\partial \delta\xi}}_{\text{扰动雅可比}}\tag{8.14,8.15}$        
+
+        
+        
+        //$\frac { \partial u } { \partial \delta \xi } = \left[ \begin{array} { c c c c c } \frac { f _ { x } } { Z } & 0 & - \frac { f _ { x } X  } { Z ^ { 2 } }& - \frac { f _ { x } X Y } { Z ^ { 2 } } & f _ { x } + \frac { f _ { x } X ^ { 2 } } { Z ^ { 2 } } & - \frac { f _ { x } Y } { Z } \\ 0 & \frac { f _ { y } } { Z } & - \frac { f _ { y } Y } { Z ^ { 2 } } & - f _ { y } - \frac { f _ { y } Y ^ { 2 } } { Z ^ { 2 } } & \frac { f _ { y } X Y } { Z ^ { 2 } } & \frac { f _ { y } X } { Z } \end{array} \right]\tag{8.18}$    
+        
+        
         for (int x = -half_patch_size; x <= half_patch_size; x++)
             for (int y = -half_patch_size; y <= half_patch_size; y++) {
 
@@ -277,7 +304,9 @@ void JacobianAccumulator::accumulate_jacobian(const cv::Range &range) {
                     0.5 * (GetPixelValue(img2, u + x, v + 1 + y) - GetPixelValue(img2, u + x, v - 1 + y))
                 );
 
-                // total jacobian
+                // total jacobian 
+                // $J=-\frac{\partial I_2}{\partial u}\cdot \frac{\partial u}{\partial \delta\xi} \tag{8.19}$
+                
                 Vector6d J = -1.0 * (J_img_pixel.transpose() * J_pixel_xi).transpose();
 
                 hessian += J * J.transpose();
@@ -296,24 +325,24 @@ void JacobianAccumulator::accumulate_jacobian(const cv::Range &range) {
 }
 
 void DirectPoseEstimationMultiLayer(
-    const cv::Mat &img1,
-    const cv::Mat &img2,
-    const VecVector2d &px_ref,
-    const vector<double> depth_ref,
+    const cv::Mat &img1,                //参考帧，带深度信息
+    const cv::Mat &img2,                //当前帧
+    const VecVector2d &px_ref,          //参考帧中像素坐标
+    const vector<double> depth_ref,     //参考帧中像素对应的深度值
     Sophus::SE3d &T21) {
 
     // parameters
-    int pyramids = 4;
-    double pyramid_scale = 0.5;
+    int pyramids = 4;                   //金字塔层数 4 层金字塔（第 0 层为原图，第 3 层最粗糙）
+    double pyramid_scale = 0.5;         //每层尺寸为上一层的 50%（即长宽各缩一半，面积 1/4）
     double scales[] = {1.0, 0.5, 0.25, 0.125};
 
-    // create pyramids
-    vector<cv::Mat> pyr1, pyr2; // image pyramids
+    // create pyramids 创建图像金字塔
+    vector<cv::Mat> pyr1, pyr2; // image pyramids pyr1:参考帧金字塔 pyr2:当前帧金字塔
     for (int i = 0; i < pyramids; i++) {
-        if (i == 0) {
+        if (i == 0) {                       //第 0 层为原图
             pyr1.push_back(img1);
             pyr2.push_back(img2);
-        } else {
+        } else {                            //后续各层通过对上一层图像进行缩放得到 按照 pyramid_scale=0.5 比例逐层下采样
             cv::Mat img1_pyr, img2_pyr;
             cv::resize(pyr1[i - 1], img1_pyr,
                        cv::Size(pyr1[i - 1].cols * pyramid_scale, pyr1[i - 1].rows * pyramid_scale));
@@ -324,14 +353,16 @@ void DirectPoseEstimationMultiLayer(
         }
     }
 
-    double fxG = fx, fyG = fy, cxG = cx, cyG = cy;  // backup the old values
+    double fxG = fx, fyG = fy, cxG = cx, cyG = cy;  // backup the old values 备份相机内参，原因是相机内参必须随着金字塔层数变化而变化，
+                                                    // 因为每层图像的尺寸不同，像素坐标系下的内参也不同，否则投影模型是错误的
     for (int level = pyramids - 1; level >= 0; level--) {
-        VecVector2d px_ref_pyr; // set the keypoints in this pyramid level
+        VecVector2d px_ref_pyr; // set the keypoints in this pyramid level 用于存储当前层的参考像素点
         for (auto &px: px_ref) {
             px_ref_pyr.push_back(scales[level] * px);
         }
 
-        // scale fx, fy, cx, cy in different pyramid levels
+        // scale fx, fy, cx, cy in different pyramid levels 缩放相机内参 $u=f_x\frac{X}{Z}+c_x,\space v=f_y\frac{Y}{Z}+c_y$
+        // 如果图像尺寸缩小为原来的 s 倍，则 fx, fy, cx, cy 也要缩小为原来的 s 倍
         fx = fxG * scales[level];
         fy = fyG * scales[level];
         cx = cxG * scales[level];
